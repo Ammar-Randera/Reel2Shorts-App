@@ -4,12 +4,12 @@ RUN apk add --no-cache ffmpeg python3 make g++
 WORKDIR /app
 
 # Install server dependencies
-COPY package.json package-lock.json* ./
-RUN npm ci --production=false
+COPY package.json ./
+RUN npm install
 
 # Install client dependencies and build
-COPY client/package.json client/package-lock.json* ./client/
-RUN cd client && npm ci
+COPY client/package.json ./client/
+RUN cd client && npm install
 COPY client/ ./client/
 RUN cd client && npx vite build
 
