@@ -96,17 +96,9 @@ export function initDb() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-
-    CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id);
-    CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
-    CREATE INDEX IF NOT EXISTS idx_videos_shortcode ON videos(instagram_shortcode);
-    CREATE INDEX IF NOT EXISTS idx_videos_source_url ON videos(source_url);
-    CREATE INDEX IF NOT EXISTS idx_publishing_queue_position ON publishing_queue(position);
-    CREATE INDEX IF NOT EXISTS idx_publishing_queue_user_id ON publishing_queue(user_id);
-    CREATE INDEX IF NOT EXISTS idx_publishing_queue_scheduled ON publishing_queue(scheduled_at);
   `);
 
-  // Run lightweight migrations for existing databases
+  // Run migrations to add missing columns before creating indexes on them
   try {
     db.exec("ALTER TABLE videos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'upload'");
   } catch {}
@@ -116,6 +108,17 @@ export function initDb() {
   try {
     db.exec("ALTER TABLE videos ADD COLUMN instagram_shortcode TEXT");
   } catch {}
+
+  // Create indexes safely after ensuring all columns exist
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id);
+    CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+    CREATE INDEX IF NOT EXISTS idx_videos_shortcode ON videos(instagram_shortcode);
+    CREATE INDEX IF NOT EXISTS idx_videos_source_url ON videos(source_url);
+    CREATE INDEX IF NOT EXISTS idx_publishing_queue_position ON publishing_queue(position);
+    CREATE INDEX IF NOT EXISTS idx_publishing_queue_user_id ON publishing_queue(user_id);
+    CREATE INDEX IF NOT EXISTS idx_publishing_queue_scheduled ON publishing_queue(scheduled_at);
+  `);
 
   return db;
 }
