@@ -7,11 +7,16 @@ import {
   CheckCircle,
   ShieldAlert,
   ArrowRight,
-  Info
+  Info,
+  Instagram,
+  FileVideo
 } from 'lucide-react';
 import UploadZone from '../components/UploadZone.jsx';
+import ReelUrlImporter from '../components/ReelUrlImporter.jsx';
+import clsx from 'clsx';
 
 export default function UploadPage() {
+  const [activeMode, setActiveMode] = useState('url'); // 'url' or 'file'
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedVideos, setUploadedVideos] = useState([]);
@@ -39,16 +44,52 @@ export default function UploadPage() {
     }
   };
 
+  const handleImportSuccess = () => {
+    // Optionally redirect to dashboard after a short delay
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       {/* Title */}
       <div>
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-          Upload Instagram Reels
+          Add Instagram Reels
         </h1>
         <p className="text-xs text-slate-500 mt-1">
-          Submit Reels you own or have permission to reuse. Videos are analyzed by AI and strictly screened for copyright and policy compliance before publishing.
+          Import directly by Instagram URL using Apify, or upload local video files. All media is strictly screened for policy and copyright compliance before queueing for YouTube Shorts.
         </p>
+      </div>
+
+      {/* Mode Selector Tabs */}
+      <div className="flex border-b border-slate-200">
+        <button
+          onClick={() => setActiveMode('url')}
+          className={clsx(
+            'flex items-center gap-2 py-3 px-5 text-xs font-semibold border-b-2 transition-colors',
+            activeMode === 'url'
+              ? 'border-indigo-600 text-indigo-700 bg-indigo-50/40'
+              : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+          )}
+        >
+          <Instagram className="w-4 h-4 text-pink-600" />
+          <span>Import by Reel URL (Apify)</span>
+          <span className="text-[10px] bg-pink-100 text-pink-700 font-bold px-1.5 py-0.5 rounded-full ml-1">
+            New
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveMode('file')}
+          className={clsx(
+            'flex items-center gap-2 py-3 px-5 text-xs font-semibold border-b-2 transition-colors',
+            activeMode === 'file'
+              ? 'border-brand-600 text-brand-700 bg-brand-50/40'
+              : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+          )}
+        >
+          <FileVideo className="w-4 h-4 text-brand-600" />
+          <span>Upload Video Files</span>
+        </button>
       </div>
 
       {/* Automated Pipeline Notice */}
@@ -62,7 +103,7 @@ export default function UploadPage() {
               Automated 4-Step Processing Pipeline:
             </p>
             <ol className="list-decimal pl-4 space-y-1 text-slate-600">
-              <li><strong>Secure Storage:</strong> Stored locally in encrypted, isolated storage.</li>
+              <li><strong>Secure Storage:</strong> Media is stored in persistent Railway storage (`/app/data/uploads`).</li>
               <li><strong>AI Video & Audio Analysis:</strong> Gemini scans the video, detects topics, languages, and generates high-converting titles, descriptions, and hashtags.</li>
               <li><strong>Strict Policy & Copyright Screen:</strong> Scans for third-party music, logos, community guideline violations, and uncredited reused content. <em>Uncertain cases are rejected automatically.</em></li>
               <li><strong>Publishing Queue:</strong> Eligible videos are queued for FIFO distribution to your verified YouTube channel.</li>
@@ -71,39 +112,48 @@ export default function UploadPage() {
         </div>
       </div>
 
-      {/* Main Upload Dropzone */}
-      <UploadZone
-        onUpload={handleUpload}
-        isUploading={isUploading}
-        uploadProgress={uploadProgress}
-      />
+      {/* Mode View: Instagram Reel URL (Apify) */}
+      {activeMode === 'url' && (
+        <ReelUrlImporter onSuccess={handleImportSuccess} />
+      )}
 
-      {/* Successfully Uploaded State */}
-      {uploadedVideos.length > 0 && (
-        <div className="card p-5 border-emerald-200 bg-emerald-50/30">
-          <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
-            <CheckCircle className="w-5 h-5 text-emerald-600" />
-            <span>{uploadedVideos.length} Video(s) Processing in Background</span>
-          </div>
-          <p className="text-xs text-slate-600 mb-4">
-            AI analysis and risk screening take approximately 10-30 seconds per video. You can monitor progress on your dashboard.
-          </p>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/')}
-              className="btn-primary py-2 px-4 text-xs font-semibold"
-            >
-              <span>Go to Dashboard</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-            <button
-              onClick={() => setUploadedVideos([])}
-              className="btn-secondary py-2 px-4 text-xs"
-            >
-              Upload More
-            </button>
-          </div>
-        </div>
+      {/* Mode View: Manual File Upload */}
+      {activeMode === 'file' && (
+        <>
+          <UploadZone
+            onUpload={handleUpload}
+            isUploading={isUploading}
+            uploadProgress={uploadProgress}
+          />
+
+          {/* Successfully Uploaded State */}
+          {uploadedVideos.length > 0 && (
+            <div className="card p-5 border-emerald-200 bg-emerald-50/30">
+              <div className="flex items-center gap-2 text-emerald-800 font-semibold text-sm mb-2">
+                <CheckCircle className="w-5 h-5 text-emerald-600" />
+                <span>{uploadedVideos.length} Video(s) Processing in Background</span>
+              </div>
+              <p className="text-xs text-slate-600 mb-4">
+                AI analysis and risk screening take approximately 10-30 seconds per video. You can monitor progress on your dashboard.
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => navigate('/')}
+                  className="btn-primary py-2 px-4 text-xs font-semibold"
+                >
+                  <span>Go to Dashboard</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setUploadedVideos([])}
+                  className="btn-secondary py-2 px-4 text-xs"
+                >
+                  Upload More
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -1,8 +1,15 @@
 import multer from 'multer';
 import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+export const UPLOAD_DIR = path.resolve(
+  process.env.UPLOAD_DIR || path.join(__dirname, '..', '..', 'data', 'uploads')
+);
 const MAX_FILE_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 500) * 1024 * 1024;
 
 const ALLOWED_MIME_TYPES = [
@@ -15,7 +22,14 @@ const ALLOWED_MIME_TYPES = [
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
-    cb(null, UPLOAD_DIR);
+    try {
+      if (!fs.existsSync(UPLOAD_DIR)) {
+        fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+      }
+      cb(null, UPLOAD_DIR);
+    } catch (err) {
+      cb(new Error(`Storage error: Unable to create upload directory at ${UPLOAD_DIR}: ${err.message}`));
+    }
   },
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
@@ -71,4 +85,4 @@ export function handleUploadError(err, req, res, next) {
   next();
 }
 
-export default { uploadSingle, uploadMultiple, handleUploadError };
+export default { uploadSingle, uploadMultiple, handleUploadError, UPLOAD_DIR };

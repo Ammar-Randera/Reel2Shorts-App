@@ -2,13 +2,15 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import ffmpeg from 'fluent-ffmpeg';
 import { getDb } from '../config/database.js';
 import { authenticate } from '../middleware/auth.js';
-import { uploadSingle, uploadMultiple, handleUploadError } from '../middleware/upload.js';
+import { uploadSingle, uploadMultiple, handleUploadError, UPLOAD_DIR } from '../middleware/upload.js';
 import { analyzeVideo } from '../services/ai-analyzer.js';
 import { screenVideo } from '../services/policy-screener.js';
 import { addToQueue, removeFromQueue } from '../services/queue-manager.js';
+import { importInstagramReels } from '../services/apify-importer.js';
 import logger from '../config/logger.js';
 
 const router = Router();
@@ -46,6 +48,20 @@ async function processVideo(videoId) {
 
     const video = db.prepare('SELECT * FROM videos WHERE id = ?').get(videoId);
     if (!video) throw new Error('Video not found');
+
+    // Proactively verify file existence on persistent storage
+    if (!fsSync.existsSync(video.file_path)) {
+      const missingMsg = `Storage error: Video file not found at ${video.file_path}`;
+      logger.error(missingMsg);
+      db.prepare(`
+        UPDATE videos SET
+          status = 'failed',
+          error_message = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(missingMsg, videoId);
+      return;
+    }
 
     logger.info(`Processing video: ${video.original_filename} (${videoId})`);
 
@@ -121,6 +137,18 @@ router.post('/upload', authenticate, (req, res, next) => {
     const videoId = uuidv4();
     const filePath = path.resolve(req.file.path);
 
+    // Verify file actually exists and has positive size on storage
+    if (!fsSync.existsSync(filePath)) {
+      logger.error(`Uploaded file verification failed: File not found at ${filePath}`);
+      return res.status(500).json({ error: 'Storage error: Uploaded file could not be verified on persistent storage.' });
+    }
+
+    const fileStat = fsSync.statSync(filePath);
+    if (fileStat.size === 0) {
+      try { fsSync.unlinkSync(filePath); } catch {}
+      return res.status(400).json({ error: 'Uploaded video file is empty (0 bytes).' });
+    }
+
     // Get video metadata
     const metadata = await getVideoMetadata(filePath);
 
@@ -177,6 +205,19 @@ router.post('/upload-multiple', authenticate, (req, res, next) => {
     for (const file of req.files) {
       const videoId = uuidv4();
       const filePath = path.resolve(file.path);
+
+      // Verify file actually exists and has positive size on storage
+      if (!fsSync.existsSync(filePath)) {
+        logger.error(`Uploaded file verification failed: File not found at ${filePath}`);
+        return res.status(500).json({ error: 'Storage error: One or more files could not be verified on persistent storage.' });
+      }
+
+      const fileStat = fsSync.statSync(filePath);
+      if (fileStat.size === 0) {
+        try { fsSync.unlinkSync(filePath); } catch {}
+        return res.status(400).json({ error: `Uploaded video file "${file.originalname}" is empty (0 bytes).` });
+      }
+
       const metadata = await getVideoMetadata(filePath);
 
       const video = {
@@ -213,6 +254,51 @@ router.post('/upload-multiple', authenticate, (req, res, next) => {
   } catch (err) {
     logger.error(`Multi-upload error: ${err.message}`);
     res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+// POST /api/videos/import-reels
+router.post('/import-reels', authenticate, async (req, res) => {
+  try {
+    const { urls, url } = req.body;
+    let urlList = [];
+
+    if (Array.isArray(urls)) {
+      urlList = urls;
+    } else if (typeof url === 'string') {
+      urlList = [url];
+    } else if (typeof urls === 'string') {
+      urlList = urls.split(/[\n,]+/).map(u => u.trim()).filter(Boolean);
+    }
+
+    if (urlList.length === 0) {
+      return res.status(400).json({ error: 'Please provide at least one valid Instagram Reel URL.' });
+    }
+
+    if (urlList.length > 20) {
+      return res.status(400).json({ error: 'Maximum 20 Reel URLs can be imported at once.' });
+    }
+
+    const maxBytes = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 500) * 1024 * 1024;
+
+    const results = await importInstagramReels({
+      urls: urlList,
+      userId: req.user.id,
+      uploadDir: UPLOAD_DIR,
+      maxBytes,
+      getVideoMetadata,
+      processVideoCallback: processVideo,
+    });
+
+    const isPartialSuccess = results.imported.length > 0 || results.skippedDuplicates.length > 0;
+
+    res.status(isPartialSuccess || results.errors.length === 0 ? 200 : 400).json({
+      success: isPartialSuccess,
+      results,
+    });
+  } catch (err) {
+    logger.error(`Import Reels endpoint error: ${err.message}`);
+    res.status(500).json({ error: err.message || 'Failed to import Instagram Reels' });
   }
 });
 

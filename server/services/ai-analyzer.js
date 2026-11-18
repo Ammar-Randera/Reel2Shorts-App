@@ -60,7 +60,18 @@ export async function analyzeVideo(filePath, mimeType) {
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
+  // Verify file existence and accessibility
+  try {
+    await fs.access(filePath);
+  } catch {
+    throw new Error(`Video file not found or inaccessible on storage: ${filePath}`);
+  }
+
   const stat = await fs.stat(filePath);
+  if (stat.size === 0) {
+    throw new Error(`Video file is empty (0 bytes): ${filePath}`);
+  }
+
   logger.info(`Analyzing video: ${path.basename(filePath)} (${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
 
   let result;

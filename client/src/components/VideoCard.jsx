@@ -10,7 +10,8 @@ import {
   PlusCircle,
   MinusCircle,
   Eye,
-  AlertCircle
+  AlertCircle,
+  Instagram
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import StatusBadge from './StatusBadge.jsx';

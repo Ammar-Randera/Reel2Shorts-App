@@ -12,9 +12,11 @@ import {
   AlertTriangle,
   RefreshCw,
   Plus,
-  Filter
+  Filter,
+  Instagram
 } from 'lucide-react';
 import VideoCard from '../components/VideoCard.jsx';
+import ReelUrlImporter from '../components/ReelUrlImporter.jsx';
 import clsx from 'clsx';
 
 export default function Dashboard() {
@@ -23,6 +25,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [showImporter, setShowImporter] = useState(false);
 
   const fetchVideos = useCallback(async (showToast = false) => {
     try {
@@ -120,6 +123,15 @@ export default function Dashboard() {
 
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShowImporter(!showImporter)}
+            className="btn-secondary py-2 px-3 text-xs border-indigo-200 text-indigo-700 bg-indigo-50/50 hover:bg-indigo-100 flex items-center gap-1.5 transition-colors"
+            title="Import from Instagram Reel URL"
+          >
+            <Instagram className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{showImporter ? 'Hide Importer' : 'Import Reel URL'}</span>
+            <span className="sm:hidden">Import</span>
+          </button>
+          <button
             onClick={() => fetchVideos(true)}
             disabled={refreshing}
             className="btn-secondary py-2 px-3 text-xs"
@@ -134,6 +146,13 @@ export default function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {/* Expandable Instagram Reel URL Importer */}
+      {showImporter && (
+        <div className="transition-all duration-200">
+          <ReelUrlImporter compact onSuccess={() => fetchVideos()} />
+        </div>
+      )}
 
       {/* Stats Counter Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

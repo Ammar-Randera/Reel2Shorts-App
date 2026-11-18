@@ -6,6 +6,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { initDb, closeDb } from './config/database.js';
@@ -22,12 +23,38 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Database
+// Trust reverse proxy (Railway / Cloudflare) to ensure accurate rate-limiting
+app.set('trust proxy', 1);
+
+// Ensure Storage & Upload Directories exist and are writable
+function ensureStorageDirectories() {
+  const uploadDir = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, '..', 'data', 'uploads'));
+  try {
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+      logger.info(`Storage: Created uploads directory: ${uploadDir}`);
+    } else {
+      logger.info(`Storage: Uploads directory exists: ${uploadDir}`);
+    }
+
+    // Verify write permissions with a temporary probe file
+    const probeFile = path.join(uploadDir, `.probe-${Date.now()}`);
+    fs.writeFileSync(probeFile, 'ok');
+    fs.unlinkSync(probeFile);
+    logger.info(`Storage: Verified read/write access to ${uploadDir}`);
+  } catch (err) {
+    logger.error(`Storage: Directory verification failure for ${uploadDir}: ${err.message}`);
+    throw err;
+  }
+}
+
+// Initialize Database & Storage
 try {
   initDb();
   logger.info('Database initialized successfully.');
-} catch (dbErr) {
-  logger.error(`Database initialization failure: ${dbErr.message}`);
+  ensureStorageDirectories();
+} catch (initErr) {
+  logger.error(`Application initialization failure: ${initErr.message}`);
   process.exit(1);
 }
 

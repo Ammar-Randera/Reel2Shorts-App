@@ -44,6 +44,9 @@ export function initDb() {
       height INTEGER,
       mime_type TEXT,
       status TEXT NOT NULL DEFAULT 'uploaded',
+      source_type TEXT NOT NULL DEFAULT 'upload',
+      source_url TEXT,
+      instagram_shortcode TEXT,
       ai_title TEXT,
       ai_description TEXT,
       ai_hashtags TEXT,
@@ -96,10 +99,23 @@ export function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id);
     CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
+    CREATE INDEX IF NOT EXISTS idx_videos_shortcode ON videos(instagram_shortcode);
+    CREATE INDEX IF NOT EXISTS idx_videos_source_url ON videos(source_url);
     CREATE INDEX IF NOT EXISTS idx_publishing_queue_position ON publishing_queue(position);
     CREATE INDEX IF NOT EXISTS idx_publishing_queue_user_id ON publishing_queue(user_id);
     CREATE INDEX IF NOT EXISTS idx_publishing_queue_scheduled ON publishing_queue(scheduled_at);
   `);
+
+  // Run lightweight migrations for existing databases
+  try {
+    db.exec("ALTER TABLE videos ADD COLUMN source_type TEXT NOT NULL DEFAULT 'upload'");
+  } catch {}
+  try {
+    db.exec("ALTER TABLE videos ADD COLUMN source_url TEXT");
+  } catch {}
+  try {
+    db.exec("ALTER TABLE videos ADD COLUMN instagram_shortcode TEXT");
+  } catch {}
 
   return db;
 }
