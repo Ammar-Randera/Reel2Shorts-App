@@ -8,15 +8,42 @@ import {
   RefreshCw,
   Plus,
   Calendar,
-  AlertCircle
+  Zap,
+  Timer,
 } from 'lucide-react';
 import QueueList from '../components/QueueList.jsx';
 import { format } from 'date-fns';
 
+/** Live countdown ticker — ticks every second */
+function LiveCountdown({ targetDate }) {
+  const calc = () => {
+    const diff = new Date(targetDate) - Date.now();
+    if (diff <= 0) return 'now';
+    const totalSeconds = Math.floor(diff / 1000);
+    const days    = Math.floor(totalSeconds / 86400);
+    const hours   = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (days > 0)    return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0)   return `${hours}h ${minutes}m ${seconds}s`;
+    if (minutes > 0) return `${minutes}m ${seconds}s`;
+    return `${seconds}s`;
+  };
+
+  const [display, setDisplay] = useState(calc);
+
+  useEffect(() => {
+    const id = setInterval(() => setDisplay(calc()), 1000);
+    return () => clearInterval(id);
+  }, [targetDate]);
+
+  return <span>{display}</span>;
+}
+
 export default function QueuePage() {
-  const [queue, setQueue] = useState([]);
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [queue, setQueue]       = useState([]);
+  const [stats, setStats]       = useState(null);
+  const [loading, setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchQueue = useCallback(async (showToast = false) => {
@@ -37,22 +64,18 @@ export default function QueuePage() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchQueue();
-  }, [fetchQueue]);
+  useEffect(() => { fetchQueue(); }, [fetchQueue]);
 
-  // Periodic polling every 10 seconds
+  // Poll every 30 s — countdowns tick live client-side, we just need fresh scheduled_at values
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchQueue();
-    }, 10000);
+    const interval = setInterval(() => fetchQueue(), 30000);
     return () => clearInterval(interval);
   }, [fetchQueue]);
 
   const handleRemove = async (videoId) => {
     try {
       await api.delete(`/videos/${videoId}/queue`);
-      toast.success('Removed video from queue');
+      toast.success('Removed from queue');
       fetchQueue();
     } catch (err) {
       toast.error(err.message || 'Failed to remove from queue');
@@ -69,16 +92,23 @@ export default function QueuePage() {
     }
   };
 
+  const hasQueue    = !loading && queue.length > 0;
+  const nextAt      = stats?.nextScheduledAt ? new Date(stats.nextScheduledAt) : null;
+  const completedAt = stats?.estimatedCompletionAt ? new Date(stats.estimatedCompletionAt) : null;
+  const interval    = stats?.intervalMinutes || 10;
+  const isPastDue   = nextAt && nextAt <= new Date();
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      {/* Header */}
+
+      {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-            FIFO Publishing Queue
+            Publishing Schedule
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Ordered sequence of approved Shorts waiting for automated publishing to YouTube
+            FIFO queue · publishes every {interval} minutes · times sourced from backend scheduler
           </p>
         </div>
 
@@ -98,39 +128,95 @@ export default function QueuePage() {
         </div>
       </div>
 
-      {/* Queue Stats Banner */}
-      {stats && stats.totalInQueue > 0 && (
+      {/* ── Prominent "Next Publication" banner ── */}
+      {hasQueue && nextAt && (
+        <div
+          className={`rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm border ${
+            isPastDue
+              ? 'bg-orange-50 border-orange-200'
+              : 'bg-indigo-50 border-indigo-200'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                isPastDue ? 'bg-orange-100 text-orange-600' : 'bg-indigo-100 text-indigo-600'
+              }`}
+            >
+              <Zap className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-0.5">
+                Next Publication
+              </p>
+              <p className={`text-lg font-bold ${isPastDue ? 'text-orange-700' : 'text-indigo-800'}`}>
+                {format(nextAt, "MMMM d, yyyy 'at' h:mm a")}
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {queue[0]?.ai_title || queue[0]?.original_filename || 'Next video'}
+              </p>
+            </div>
+          </div>
+
+          {/* Live countdown */}
+          <div
+            className={`flex items-center gap-2 text-2xl font-mono font-bold tracking-tight ${
+              isPastDue ? 'text-orange-600' : 'text-indigo-600'
+            }`}
+          >
+            <Timer className="w-6 h-6 shrink-0" />
+            {isPastDue
+              ? <span className="text-orange-600 text-base font-semibold">Publishing soon…</span>
+              : <LiveCountdown targetDate={nextAt} />
+            }
+          </div>
+        </div>
+      )}
+
+      {/* ── Stats cards ── */}
+      {hasQueue && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="card p-4">
-            <span className="text-xs text-slate-400 block mb-1">Total Queued</span>
-            <span className="text-xl font-bold text-slate-900">{stats.totalInQueue} Videos</span>
+            <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <ListOrdered className="w-3.5 h-3.5" />
+              <span>Total in Queue</span>
+            </div>
+            <span className="text-2xl font-bold text-slate-900">
+              {stats?.totalInQueue ?? queue.length}
+            </span>
+            <span className="text-xs text-slate-400 ml-1">videos</span>
           </div>
+
           <div className="card p-4">
-            <span className="text-xs text-slate-400 block mb-1">Next Video Scheduled</span>
+            <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Next Slot</span>
+            </div>
             <span className="text-sm font-semibold text-indigo-700">
-              {stats.nextScheduledAt
-                ? format(new Date(stats.nextScheduledAt), 'PPp')
-                : 'Immediately'}
+              {nextAt ? format(nextAt, 'PPp') : 'Immediately'}
             </span>
           </div>
+
           <div className="card p-4">
-            <span className="text-xs text-slate-400 block mb-1">Estimated Completion</span>
-            <span className="text-sm font-semibold text-slate-800">
-              {stats.estimatedCompletionAt
-                ? format(new Date(stats.estimatedCompletionAt), 'PPp')
-                : '—'}
+            <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
+              <Clock className="w-3.5 h-3.5" />
+              <span>Queue Clears At</span>
+            </div>
+            <span className="text-sm font-semibold text-slate-700">
+              {completedAt ? format(completedAt, 'PPp') : '—'}
             </span>
           </div>
         </div>
       )}
 
-      {/* Queue Items List */}
+      {/* ── Queue item list ── */}
       <QueueList
         queue={queue}
         onRemove={handleRemove}
         onReorder={handleReorder}
         loading={loading}
       />
+
     </div>
   );
 }

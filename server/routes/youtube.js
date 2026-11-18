@@ -163,7 +163,13 @@ router.get('/queue', authenticate, (req, res) => {
 router.get('/queue/stats', authenticate, (req, res) => {
   try {
     const stats = getQueueStats(req.user.id);
-    res.json(stats);
+    // Also return the user's configured publish interval so frontend can display it
+    const db = getDb();
+    const settings = db.prepare('SELECT publish_interval_minutes FROM settings WHERE user_id = ?').get(req.user.id);
+    const intervalMinutes = settings?.publish_interval_minutes
+      || parseInt(process.env.DEFAULT_PUBLISH_INTERVAL_MINUTES, 10)
+      || 10;
+    res.json({ ...stats, intervalMinutes });
   } catch (err) {
     logger.error(`Queue stats error: ${err.message}`);
     res.status(500).json({ error: 'Failed to get queue stats' });
