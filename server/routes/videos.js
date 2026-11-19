@@ -407,6 +407,17 @@ router.post('/:id/queue', authenticate, (req, res) => {
       return res.status(400).json({ error: `Cannot queue video with status '${video.status}'. Must be 'analyzed'.` });
     }
 
+    // Safety check: Cannot queue if already published or already has a YouTube ID
+    if (video.status === 'published' || video.youtube_video_id) {
+      return res.status(400).json({ error: 'This video has already been published to YouTube.' });
+    }
+
+    // Safety check: Cannot queue if already in publishing_queue
+    const existingQueue = db.prepare('SELECT id FROM publishing_queue WHERE video_id = ?').get(video.id);
+    if (existingQueue) {
+      return res.status(400).json({ error: 'This video is already in the publishing queue.' });
+    }
+
     // Check policy approval
     const policyResult = video.policy_result ? JSON.parse(video.policy_result) : null;
     if (!policyResult || !policyResult.approved) {

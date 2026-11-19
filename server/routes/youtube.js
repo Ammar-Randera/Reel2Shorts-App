@@ -5,7 +5,7 @@ import { authenticate } from '../middleware/auth.js';
 import { encrypt, decrypt } from '../services/encryption.js';
 import { getAuthUrl, handleCallback, getChannelInfo } from '../services/youtube-publisher.js';
 import { getQueue, getQueueStats, reorderQueue } from '../services/queue-manager.js';
-import { processNextDueVideo } from '../workers/processor.js';
+import { processNextDueVideo, pausePublishing, resumePublishing, isPublishingPaused } from '../workers/processor.js';
 import logger from '../config/logger.js';
 
 const router = Router();
@@ -205,6 +205,18 @@ router.post('/queue/process', authenticate, (req, res) => {
     logger.error(`Trigger queue error: ${err.message}`);
     res.status(500).json({ error: 'Failed to trigger worker' });
   }
+});
+
+// POST /api/youtube/queue/pause
+router.post('/queue/pause', authenticate, (_req, res) => {
+  pausePublishing();
+  res.json({ message: 'Automatic publishing paused', paused: true });
+});
+
+// POST /api/youtube/queue/resume
+router.post('/queue/resume', authenticate, (_req, res) => {
+  resumePublishing();
+  res.json({ message: 'Automatic publishing resumed', paused: false });
 });
 
 export default router;

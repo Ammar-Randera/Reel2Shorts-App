@@ -64,12 +64,17 @@ export function addToQueue(videoId, userId) {
  * @param {string} videoId
  */
 export function removeFromQueue(videoId) {
+  if (!videoId) {
+    logger.warn('[QueueManager] removeFromQueue called without valid ID. Ignoring.');
+    return;
+  }
   const db = getDb();
 
-  const entry = db.prepare('SELECT * FROM publishing_queue WHERE video_id = ?').get(videoId);
+  // Accept either video_id or queue_id
+  const entry = db.prepare('SELECT * FROM publishing_queue WHERE video_id = ? OR id = ?').get(videoId, videoId);
   if (!entry) return;
 
-  db.prepare('DELETE FROM publishing_queue WHERE video_id = ?').run(videoId);
+  db.prepare('DELETE FROM publishing_queue WHERE id = ?').run(entry.id);
 
   // Reorder remaining positions for this user
   const remaining = db.prepare(
@@ -84,7 +89,7 @@ export function removeFromQueue(videoId) {
   });
   updateTransaction();
 
-  logger.info(`Removed video ${videoId} from queue`);
+  logger.info(`Removed video ${videoId} (queue item: ${entry.id}) from queue`);
 }
 
 /**
@@ -111,6 +116,7 @@ export function getQueue(userId) {
 
 /**
  * Get the next video due for publishing (across all users)
+ * Guarantees that only unpublished, queued videos without an existing YouTube ID are returned.
  * @returns {Object|null} Queue entry with video and credential details, or null
  */
 export function getNextDue() {
@@ -120,14 +126,32 @@ export function getNextDue() {
   return db.prepare(`
     SELECT
       pq.id as queue_id,
+      pq.video_id as video_id,
       pq.position,
       pq.scheduled_at,
       pq.user_id,
-      v.*
+      v.id as id,
+      v.user_id as video_user_id,
+      v.original_filename,
+      v.stored_filename,
+      v.file_path,
+      v.file_size,
+      v.mime_type,
+      v.duration_seconds,
+      v.ai_title,
+      v.ai_description,
+      v.ai_hashtags,
+      v.status,
+      v.retry_count,
+      v.youtube_video_id,
+      v.youtube_url,
+      v.published_at
     FROM publishing_queue pq
     JOIN videos v ON v.id = pq.video_id
     WHERE (pq.scheduled_at <= ? OR datetime(pq.scheduled_at) <= datetime('now'))
-      AND (v.status = 'queued' OR (v.status = 'publishing' AND v.updated_at <= datetime('now', '-5 minutes')))
+      AND v.status = 'queued'
+      AND (v.youtube_video_id IS NULL OR v.youtube_video_id = '')
+      AND v.published_at IS NULL
     ORDER BY pq.scheduled_at ASC
     LIMIT 1
   `).get(nowIso) || null;
