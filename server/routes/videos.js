@@ -456,6 +456,27 @@ router.delete('/:id/queue', authenticate, (req, res) => {
       return res.status(404).json({ error: 'Video not found' });
     }
 
+    // SAFETY 1: Prevent dequeuing while actively uploading to YouTube
+    if (video.status === 'publishing') {
+      return res.status(409).json({ error: 'Cannot remove video from queue while it is actively uploading to YouTube.' });
+    }
+
+    // SAFETY 2: Never overwrite a published video's status or destroy its YouTube publishing history.
+    // A published video should not be in the active queue at all — if it somehow is (e.g. crash recovery),
+    // we remove the queue entry but preserve the Published status and all YouTube metadata.
+    if (video.status === 'published' || video.youtube_video_id) {
+      logger.warn(`[Dequeue] Attempted to dequeue already-published video ${req.params.id} (YouTube ID: ${video.youtube_video_id}). Removing queue entry only — status and YouTube metadata preserved.`);
+      removeFromQueue(req.params.id);
+      return res.json({
+        message: 'Queue entry removed. Video status preserved as Published — YouTube publishing history is intact.',
+        preserved: true,
+        youtubeVideoId: video.youtube_video_id,
+        youtubeUrl: video.youtube_url,
+        publishedAt: video.published_at,
+      });
+    }
+
+    // For non-published videos, remove from queue and reset status to 'analyzed'
     removeFromQueue(req.params.id);
     db.prepare("UPDATE videos SET status = 'analyzed', updated_at = datetime('now') WHERE id = ?").run(req.params.id);
 

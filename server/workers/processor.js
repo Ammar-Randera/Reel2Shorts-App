@@ -294,23 +294,71 @@ export async function processNextDueVideo() {
 
     // POST-UPLOAD CRITICAL SAFETY NET:
     // If upload already succeeded on YouTube but a subsequent code line threw,
-    // IMMEDIATELY persist the YouTube ID and mark Published so it can NEVER be retried!
+    // IMMEDIATELY persist the YouTube ID and mark Published so it can NEVER be retried.
+    //
+    // If the DB write itself fails, we MUST NOT leave the video in 'publishing' status,
+    // because the startup integrity check resets all 'publishing' videos with no
+    // youtube_video_id back to 'queued', which would cause a second upload.
+    //
+    // Strategy:
+    //   Attempt 1-3: Write status='published' + youtube_video_id (retries on transient errors).
+    //   If all three fail: Write status='failed' with the YouTube ID embedded in error_message.
+    //     → 'failed' videos are NEVER touched by startup check 3 (which only resets 'publishing').
+    //     → 'failed' videos are NEVER returned by getNextDue() (which requires status='queued').
+    //     → The YouTube ID is preserved in error_message so it can be recovered manually.
     if (publishResult && publishResult.videoId && videoId) {
-      logger.error(`[QueueWorker] POST-UPLOAD SAFETY NET TRIGGERED: YouTube upload succeeded (${publishResult.videoId}) but an error occurred. Forcing status to published.`);
-      try {
-        db.prepare(`
-          UPDATE videos SET
-            status = 'published',
-            youtube_video_id = ?,
-            youtube_url = ?,
-            published_at = datetime('now'),
-            updated_at = datetime('now')
-          WHERE id = ?
-        `).run(publishResult.videoId, publishResult.url, videoId);
-        removeFromQueue(videoId);
-      } catch (persistErr) {
-        logger.error(`[QueueWorker] Critical error persisting published status: ${persistErr.message}`);
+      logger.error(`[QueueWorker] POST-UPLOAD SAFETY NET TRIGGERED: YouTube upload succeeded (${publishResult.videoId}) but an error occurred. Attempting to persist published status.`);
+
+      let safetyNetSaved = false;
+
+      // Attempt up to 3 times to write the published status (guards against transient DB errors)
+      for (let attempt = 1; attempt <= 3 && !safetyNetSaved; attempt++) {
+        try {
+          db.prepare(`
+            UPDATE videos SET
+              status = 'published',
+              youtube_video_id = ?,
+              youtube_url = ?,
+              published_at = datetime('now'),
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).run(publishResult.videoId, publishResult.url, videoId);
+          removeFromQueue(videoId);
+          safetyNetSaved = true;
+          logger.info(`[QueueWorker] Safety net: successfully persisted published status for video ${videoId} on attempt ${attempt}.`);
+        } catch (persistErr) {
+          logger.error(`[QueueWorker] Safety net write attempt ${attempt}/3 failed for video ${videoId}: ${persistErr.message}`);
+        }
       }
+
+      // All 3 write attempts failed — fall back to 'failed' status.
+      // CRITICAL: We must NOT leave the video as 'publishing'. If the server restarts with
+      // status='publishing' and no youtube_video_id, startup check 3 would reset it to
+      // 'queued', and the worker would upload the video to YouTube again.
+      // Setting status='failed' permanently blocks automatic re-upload while preserving
+      // the YouTube video ID in error_message for manual recovery.
+      if (!safetyNetSaved) {
+        const recoveryMessage = `UPLOAD_SUCCEEDED_UNRECORDED: Video was successfully uploaded to YouTube (ID: ${publishResult.videoId}, URL: ${publishResult.url}) but the database could not be updated after ${3} attempts. Manual intervention required to record this publication. DO NOT re-upload.`;
+        logger.error(`[QueueWorker] CRITICAL: All safety net write attempts exhausted for video ${videoId}. YouTube ID: ${publishResult.videoId}. Falling back to 'failed' status to prevent re-upload on restart.`);
+        try {
+          db.prepare(`
+            UPDATE videos SET
+              status = 'failed',
+              error_message = ?,
+              updated_at = datetime('now')
+            WHERE id = ?
+          `).run(recoveryMessage, videoId);
+          removeFromQueue(videoId);
+          logger.error(`[QueueWorker] Video ${videoId} marked as 'failed' with YouTube ID in error_message. It will NOT be automatically re-uploaded. Manual DB update required: set youtube_video_id='${publishResult.videoId}', status='published'.`);
+        } catch (finalErr) {
+          // This is the absolute last resort. If even the 'failed' status write fails,
+          // the video stays 'publishing'. Log it prominently and do NOT reset isProcessing
+          // so the worker stops processing until the server is restarted and the startup
+          // check can re-evaluate the state.
+          logger.error(`[QueueWorker] FATAL: Cannot write ANY status update for video ${videoId}. YouTube ID: ${publishResult.videoId}. DB error: ${finalErr.message}. The video remains in 'publishing' state. Startup check will reset it to 'queued' on next restart — MANUAL DB INTERVENTION REQUIRED before restarting.`);
+        }
+      }
+
       isProcessing = false;
       return;
     }
@@ -353,39 +401,70 @@ export function startPublishingWorker() {
 
   const db = getDb();
 
-  // Startup Database Consistency & De-duplication check:
+  // Startup Database Consistency & De-duplication check (wrapped in atomic transaction):
   try {
-    // 1. Any video that already has a youtube_video_id MUST be marked 'published' and removed from queue
-    const syncPublished = db.prepare(`
-      UPDATE videos SET status = 'published', published_at = datetime('now'), updated_at = datetime('now')
-      WHERE (youtube_video_id IS NOT NULL AND youtube_video_id != '')
-        AND status != 'published'
-    `).run();
-    if (syncPublished.changes > 0) {
-      logger.info(`[QueueWorker] Startup check: Synchronized ${syncPublished.changes} video(s) with existing YouTube IDs to 'published'.`);
-    }
+    const startupTx = db.transaction(() => {
+      // 0. Auto-recover any video where YouTube upload succeeded but previous safety net DB write failed
+      const unrecorded = db.prepare(`
+        SELECT id, error_message FROM videos
+        WHERE error_message LIKE 'UPLOAD_SUCCEEDED_UNRECORDED%'
+      `).all();
 
-    // 2. Remove all published videos from publishing_queue
-    const cleanQueue = db.prepare(`
-      DELETE FROM publishing_queue WHERE video_id IN (
-        SELECT id FROM videos WHERE status = 'published' OR (youtube_video_id IS NOT NULL AND youtube_video_id != '')
-      )
-    `).run();
-    if (cleanQueue.changes > 0) {
-      logger.info(`[QueueWorker] Startup check: Purged ${cleanQueue.changes} already-published entry/entries from publishing_queue.`);
-    }
+      for (const item of unrecorded) {
+        const idMatch = item.error_message.match(/ID:\s*([a-zA-Z0-9_-]+)/);
+        const urlMatch = item.error_message.match(/URL:\s*(https?:\/\/[^\s,\)]+)/);
+        if (idMatch && idMatch[1]) {
+          const ytId = idMatch[1];
+          const ytUrl = urlMatch ? urlMatch[1] : `https://youtube.com/shorts/${ytId}`;
+          db.prepare(`
+            UPDATE videos SET
+              status = 'published',
+              youtube_video_id = ?,
+              youtube_url = ?,
+              published_at = datetime('now'),
+              updated_at = datetime('now'),
+              error_message = NULL
+            WHERE id = ?
+          `).run(ytId, ytUrl, item.id);
+          logger.info(`[QueueWorker] Startup check: Auto-recovered unrecorded upload for video ${item.id} -> YouTube ID: ${ytId}`);
+        }
+      }
 
-    // 3. For any video stuck in 'publishing' with NO YouTube ID, safely reset to 'queued'
-    const resetStuck = db.prepare(`
-      UPDATE videos SET status = 'queued', updated_at = datetime('now')
-      WHERE status = 'publishing'
-        AND (youtube_video_id IS NULL OR youtube_video_id = '')
-    `).run();
-    if (resetStuck.changes > 0) {
-      logger.info(`[QueueWorker] Startup check: Reset ${resetStuck.changes} stranded 'publishing' video(s) back to 'queued'.`);
-    }
+      // 1. Any video that already has a youtube_video_id MUST be marked 'published' and removed from queue
+      const syncPublished = db.prepare(`
+        UPDATE videos SET status = 'published', published_at = datetime('now'), updated_at = datetime('now')
+        WHERE (youtube_video_id IS NOT NULL AND youtube_video_id != '')
+          AND status != 'published'
+      `).run();
+      if (syncPublished.changes > 0) {
+        logger.info(`[QueueWorker] Startup check: Synchronized ${syncPublished.changes} video(s) with existing YouTube IDs to 'published'.`);
+      }
+
+      // 2. Remove all published videos from publishing_queue
+      const cleanQueue = db.prepare(`
+        DELETE FROM publishing_queue WHERE video_id IN (
+          SELECT id FROM videos WHERE status = 'published' OR (youtube_video_id IS NOT NULL AND youtube_video_id != '')
+        )
+      `).run();
+      if (cleanQueue.changes > 0) {
+        logger.info(`[QueueWorker] Startup check: Purged ${cleanQueue.changes} already-published entry/entries from publishing_queue.`);
+      }
+
+      // 3. For any video stuck in 'publishing' with NO YouTube ID and NOT unrecorded, safely reset to 'queued'
+      const resetStuck = db.prepare(`
+        UPDATE videos SET status = 'queued', updated_at = datetime('now')
+        WHERE status = 'publishing'
+          AND (youtube_video_id IS NULL OR youtube_video_id = '')
+          AND (error_message IS NULL OR error_message NOT LIKE 'UPLOAD_SUCCEEDED_UNRECORDED%')
+      `).run();
+      if (resetStuck.changes > 0) {
+        logger.info(`[QueueWorker] Startup check: Reset ${resetStuck.changes} stranded 'publishing' video(s) back to 'queued'.`);
+      }
+    });
+
+    startupTx();
   } catch (syncErr) {
-    logger.warn(`[QueueWorker] Startup database integrity check warning: ${syncErr.message}`);
+    logger.error(`[QueueWorker] Startup database integrity check error: ${syncErr.message}`);
   }
 
   logger.info(`[QueueWorker] Starting publishing queue worker (polling interval: ${POLL_INTERVAL_MS / 1000}s)...`);
