@@ -89,6 +89,9 @@ app.get('/api/health', (_req, res) => {
     const queueCount = db.prepare('SELECT COUNT(*) as count FROM publishing_queue').get()?.count || 0;
     const videosByStatus = db.prepare('SELECT status, COUNT(*) as count FROM videos GROUP BY status').all();
     const nextDue = getNextDue();
+    const ytCred = db.prepare('SELECT channel_id, channel_title, token_expiry FROM youtube_credentials LIMIT 1').get();
+    const recentVideos = db.prepare('SELECT id, original_filename, status, error_message, youtube_video_id, updated_at FROM videos ORDER BY updated_at DESC LIMIT 3').all();
+
     res.json({
       status: 'ok',
       service: 'Reel2Shorts API',
@@ -97,6 +100,8 @@ app.get('/api/health', (_req, res) => {
       queueCount,
       videosByStatus,
       nextDue: nextDue ? { id: nextDue.video_id, status: nextDue.status, scheduled_at: nextDue.scheduled_at } : null,
+      youtubeAuth: ytCred ? { connected: true, channelTitle: ytCred.channel_title, tokenExpiry: ytCred.token_expiry } : { connected: false },
+      recentVideos,
     });
   } catch (err) {
     res.json({
