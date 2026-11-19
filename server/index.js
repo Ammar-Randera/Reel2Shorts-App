@@ -9,13 +9,14 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { initDb, closeDb } from './config/database.js';
+import { initDb, closeDb, getDb } from './config/database.js';
 import logger from './config/logger.js';
 import authRoutes from './routes/auth.js';
 import videoRoutes from './routes/videos.js';
 import youtubeRoutes from './routes/youtube.js';
 import settingsRoutes from './routes/settings.js';
 import { startPublishingWorker, stopPublishingWorker } from './workers/processor.js';
+import { getNextDue } from './services/queue-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,12 +84,29 @@ const apiLimiter = rateLimit({
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'Reel2Shorts API',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+  try {
+    const db = getDb();
+    const queueCount = db.prepare('SELECT COUNT(*) as count FROM publishing_queue').get()?.count || 0;
+    const videosByStatus = db.prepare('SELECT status, COUNT(*) as count FROM videos GROUP BY status').all();
+    const nextDue = getNextDue();
+    res.json({
+      status: 'ok',
+      service: 'Reel2Shorts API',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      queueCount,
+      videosByStatus,
+      nextDue: nextDue ? { id: nextDue.video_id, status: nextDue.status, scheduled_at: nextDue.scheduled_at } : null,
+    });
+  } catch (err) {
+    res.json({
+      status: 'ok',
+      service: 'Reel2Shorts API',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      error: err.message,
+    });
+  }
 });
 
 // Mount Routes
