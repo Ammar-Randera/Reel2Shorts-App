@@ -4,7 +4,7 @@ import path from 'node:path';
 import logger from '../config/logger.js';
 
 const MAX_INLINE_SIZE = 20 * 1024 * 1024; // 20MB for inline data
-const ANALYSIS_TIMEOUT = 120_000; // 120 seconds
+const ANALYSIS_TIMEOUT = 60_000; // 60 seconds max timeout (prevents 5-minute socket hangs)
 
 const ANALYSIS_PROMPT = `You are a professional video content analyst. Analyze this video carefully and return a JSON object with the following structure. Be thorough and accurate.
 
@@ -58,8 +58,8 @@ export async function analyzeVideo(filePath, mimeType) {
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  const modelName = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  const model = genAI.getGenerativeModel({ model: modelName });
+  const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = genAI.getGenerativeModel({ model: modelName }, { timeout: ANALYSIS_TIMEOUT });
 
   // Verify file existence and accessibility
   try {
@@ -73,7 +73,7 @@ export async function analyzeVideo(filePath, mimeType) {
     throw new Error(`Video file is empty (0 bytes): ${filePath}`);
   }
 
-  logger.info(`Analyzing video: ${path.basename(filePath)} (${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
+  logger.info(`Analyzing video with model '${modelName}': ${path.basename(filePath)} (${(stat.size / 1024 / 1024).toFixed(1)}MB)`);
 
   let result;
 
@@ -86,15 +86,34 @@ export async function analyzeVideo(filePath, mimeType) {
     const timeout = setTimeout(() => abortController.abort(), ANALYSIS_TIMEOUT);
 
     try {
-      result = await model.generateContent([
-        {
-          inlineData: {
-            mimeType: mimeType || 'video/mp4',
-            data: base64Data,
+      result = await model.generateContent(
+        [
+          {
+            inlineData: {
+              mimeType: mimeType || 'video/mp4',
+              data: base64Data,
+            },
           },
-        },
-        { text: ANALYSIS_PROMPT },
-      ]);
+          { text: ANALYSIS_PROMPT },
+        ],
+        { signal: abortController.signal, timeout: ANALYSIS_TIMEOUT }
+      );
+    } catch (inlineErr) {
+      clearTimeout(timeout);
+      const causeMsg = inlineErr.cause ? ` (${inlineErr.cause.code || inlineErr.cause.message || inlineErr.cause})` : '';
+      logger.warn(`[AIAnalyzer] Inline video analysis failed for ${path.basename(filePath)}: ${inlineErr.message}${causeMsg}. Falling back to metadata-based analysis.`);
+
+      const metadataPrompt = `${ANALYSIS_PROMPT}
+
+NOTE: Direct video stream decoding was unavailable or timed out. Based on the filename "${path.basename(filePath)}" and file type "${mimeType}", generate engaging title, description, and hashtags. Provide a conservative policy analysis.`;
+
+      try {
+        result = await model.generateContent(metadataPrompt, { timeout: 30_000 });
+      } catch (fallbackErr) {
+        const fbCause = fallbackErr.cause ? ` (${fallbackErr.cause.code || fallbackErr.cause.message || fallbackErr.cause})` : '';
+        logger.error(`[AIAnalyzer] Metadata fallback analysis also failed for ${path.basename(filePath)}: ${fallbackErr.message}${fbCause}`);
+        throw fallbackErr;
+      }
     } finally {
       clearTimeout(timeout);
     }
@@ -106,7 +125,7 @@ export async function analyzeVideo(filePath, mimeType) {
 
 NOTE: The video file is too large to analyze directly. Based on the filename "${path.basename(filePath)}" and file type "${mimeType}", provide a conservative analysis. Mark all copyright/reuse flags as uncertain (set flags to true with low confidence) since you cannot view the content directly.`;
 
-    result = await model.generateContent(metadataPrompt);
+    result = await model.generateContent(metadataPrompt, { timeout: 30_000 });
   }
 
   const responseText = result.response.text();

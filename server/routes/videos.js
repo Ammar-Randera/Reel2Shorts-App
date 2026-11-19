@@ -111,14 +111,15 @@ async function processVideo(videoId) {
       logger.info(`Video ${videoId} rejected: ${rejectionReason}`);
     }
   } catch (err) {
-    logger.error(`Processing failed for video ${videoId}: ${err.message}`);
+    const causeMsg = err.cause ? ` (cause: ${err.cause.code || err.cause.message || err.cause})` : '';
+    logger.error(`Processing failed for video ${videoId}: ${err.message}${causeMsg}`);
     db.prepare(`
       UPDATE videos SET
         status = 'failed',
         error_message = ?,
         updated_at = datetime('now')
       WHERE id = ?
-    `).run(`Processing error: ${err.message}`, videoId);
+    `).run(`Processing error: ${err.message}${causeMsg}`, videoId);
   }
 }
 
