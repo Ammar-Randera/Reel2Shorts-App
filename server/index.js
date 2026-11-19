@@ -87,10 +87,8 @@ app.get('/api/health', (_req, res) => {
   try {
     const db = getDb();
     const queueCount = db.prepare('SELECT COUNT(*) as count FROM publishing_queue').get()?.count || 0;
-    const videosByStatus = db.prepare('SELECT status, COUNT(*) as count FROM videos GROUP BY status').all();
     const nextDue = getNextDue();
-    const ytCred = db.prepare('SELECT channel_id, channel_title, token_expiry FROM youtube_credentials LIMIT 1').get();
-    const recentVideos = db.prepare('SELECT id, original_filename, status, error_message, youtube_video_id, updated_at FROM videos ORDER BY updated_at DESC LIMIT 3').all();
+    const ytCred = db.prepare('SELECT channel_title, token_expiry FROM youtube_credentials LIMIT 1').get();
 
     res.json({
       status: 'ok',
@@ -98,10 +96,8 @@ app.get('/api/health', (_req, res) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       queueCount,
-      videosByStatus,
-      nextDue: nextDue ? { id: nextDue.video_id, status: nextDue.status, scheduled_at: nextDue.scheduled_at } : null,
-      youtubeAuth: ytCred ? { connected: true, channelTitle: ytCred.channel_title, tokenExpiry: ytCred.token_expiry } : { connected: false },
-      recentVideos,
+      nextDue: nextDue ? { id: nextDue.video_id, scheduled_at: nextDue.scheduled_at } : null,
+      youtubeAuth: ytCred ? { connected: true, channelTitle: ytCred.channel_title } : { connected: false },
     });
   } catch (err) {
     res.json({
