@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js';
 import { encrypt, decrypt } from '../services/encryption.js';
 import { getAuthUrl, handleCallback, getChannelInfo } from '../services/youtube-publisher.js';
 import { getQueue, getQueueStats, reorderQueue } from '../services/queue-manager.js';
+import { processNextDueVideo } from '../workers/processor.js';
 import logger from '../config/logger.js';
 
 const router = Router();
@@ -190,6 +191,19 @@ router.put('/queue/reorder', authenticate, (req, res) => {
   } catch (err) {
     logger.error(`Reorder queue error: ${err.message}`);
     res.status(500).json({ error: 'Failed to reorder queue' });
+  }
+});
+
+// POST /api/youtube/queue/process
+router.post('/queue/process', authenticate, (req, res) => {
+  try {
+    processNextDueVideo().catch(err => {
+      logger.error(`Manual queue process error: ${err.message}`);
+    });
+    res.json({ message: 'Publishing worker triggered' });
+  } catch (err) {
+    logger.error(`Trigger queue error: ${err.message}`);
+    res.status(500).json({ error: 'Failed to trigger worker' });
   }
 });
 

@@ -45,6 +45,20 @@ export default function QueuePage() {
   const [stats, setStats]       = useState(null);
   const [loading, setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [triggering, setTriggering] = useState(false);
+
+  const handleTriggerWorker = async () => {
+    try {
+      setTriggering(true);
+      await api.post('/youtube/queue/process', {});
+      toast.success('Publishing worker triggered!');
+      setTimeout(() => fetchQueue(), 2000);
+    } catch (err) {
+      toast.error('Failed to trigger worker: ' + err.message);
+    } finally {
+      setTriggering(false);
+    }
+  };
 
   const fetchQueue = useCallback(async (showToast = false) => {
     try {
@@ -158,17 +172,30 @@ export default function QueuePage() {
             </div>
           </div>
 
-          {/* Live countdown */}
-          <div
-            className={`flex items-center gap-2 text-2xl font-mono font-bold tracking-tight ${
-              isPastDue ? 'text-orange-600' : 'text-indigo-600'
-            }`}
-          >
-            <Timer className="w-6 h-6 shrink-0" />
-            {isPastDue
-              ? <span className="text-orange-600 text-base font-semibold">Publishing soon…</span>
-              : <LiveCountdown targetDate={nextAt} />
-            }
+          {/* Live countdown and action */}
+          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3">
+            <div
+              className={`flex items-center gap-2 text-2xl font-mono font-bold tracking-tight ${
+                isPastDue ? 'text-orange-600' : 'text-indigo-600'
+              }`}
+            >
+              <Timer className="w-6 h-6 shrink-0" />
+              {isPastDue
+                ? <span className="text-orange-600 text-base font-semibold">Due for publishing</span>
+                : <LiveCountdown targetDate={nextAt} />
+              }
+            </div>
+
+            {isPastDue && (
+              <button
+                onClick={handleTriggerWorker}
+                disabled={triggering}
+                className="btn-primary py-1.5 px-3 text-xs bg-orange-600 hover:bg-orange-700 shadow-sm"
+                title="Trigger publishing worker now"
+              >
+                <span>{triggering ? 'Publishing...' : 'Publish Now'}</span>
+              </button>
+            )}
           </div>
         </div>
       )}

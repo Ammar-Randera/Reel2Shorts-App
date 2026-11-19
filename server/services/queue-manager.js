@@ -29,8 +29,9 @@ export function addToQueue(videoId, userId) {
   // Calculate scheduled time
   let scheduledAt;
   if (lastItem) {
-    const lastTime = new Date(lastItem.scheduled_at);
-    scheduledAt = new Date(lastTime.getTime() + intervalMinutes * 60 * 1000);
+    const lastTime = new Date(lastItem.scheduled_at).getTime();
+    const baseTime = Math.max(lastTime, Date.now());
+    scheduledAt = new Date(baseTime + intervalMinutes * 60 * 1000);
   } else {
     // Queue is empty, schedule immediately
     scheduledAt = new Date();
@@ -114,6 +115,7 @@ export function getQueue(userId) {
  */
 export function getNextDue() {
   const db = getDb();
+  const nowIso = new Date().toISOString();
 
   return db.prepare(`
     SELECT
@@ -124,11 +126,11 @@ export function getNextDue() {
       v.*
     FROM publishing_queue pq
     JOIN videos v ON v.id = pq.video_id
-    WHERE pq.scheduled_at <= datetime('now')
-      AND v.status = 'queued'
+    WHERE (pq.scheduled_at <= ? OR datetime(pq.scheduled_at) <= datetime('now'))
+      AND (v.status = 'queued' OR (v.status = 'publishing' AND v.updated_at <= datetime('now', '-5 minutes')))
     ORDER BY pq.scheduled_at ASC
     LIMIT 1
-  `).get() || null;
+  `).get(nowIso) || null;
 }
 
 /**

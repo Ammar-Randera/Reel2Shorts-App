@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { getDb } from '../config/database.js';
 import logger from '../config/logger.js';
 import { getNextDue, removeFromQueue } from '../services/queue-manager.js';
@@ -13,21 +14,22 @@ const POLL_INTERVAL_MS = 30 * 1000; // 30 seconds
 /**
  * Process a single due video from the publishing queue
  */
-async function processNextDueVideo() {
+export async function processNextDueVideo() {
   if (isProcessing) return;
   isProcessing = true;
 
   const db = getDb();
+  let dueItem = null;
 
   try {
-    const dueItem = getNextDue();
+    dueItem = getNextDue();
     if (!dueItem) {
       isProcessing = false;
       return;
     }
 
-    const { video_id, user_id, id: videoRecordId } = dueItem;
-    logger.info(`[QueueWorker] Processing due video ID: ${video_id} for user: ${user_id}`);
+    const { video_id, user_id } = dueItem;
+    logger.info(`[QueueWorker] Processing due video ID: ${video_id} ("${dueItem.ai_title || dueItem.original_filename}") for user: ${user_id}`);
 
     // Check if user has auto-publish enabled in settings
     const userSettings = db.prepare('SELECT auto_publish FROM settings WHERE user_id = ?').get(user_id);
@@ -44,10 +46,26 @@ async function processNextDueVideo() {
       db.prepare(`
         UPDATE videos SET
           status = 'failed',
-          error_message = 'YouTube account not connected. Please connect in Settings.',
+          error_message = 'YouTube account not connected. Please connect your YouTube channel in Settings.',
           updated_at = datetime('now')
         WHERE id = ?
       `).run(video_id);
+      removeFromQueue(video_id);
+      isProcessing = false;
+      return;
+    }
+
+    // Verify stored video file exists on disk
+    if (!dueItem.file_path || !fs.existsSync(dueItem.file_path)) {
+      const errMsg = `Storage error: Stored video file not found at ${dueItem.file_path || 'unknown path'}`;
+      logger.error(`[QueueWorker] ${errMsg}`);
+      db.prepare(`
+        UPDATE videos SET
+          status = 'failed',
+          error_message = ?,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(errMsg, video_id);
       removeFromQueue(video_id);
       isProcessing = false;
       return;
@@ -62,33 +80,41 @@ async function processNextDueVideo() {
       accessToken = decrypt(credentials.access_token_encrypted);
     } catch (err) {
       logger.error(`[QueueWorker] Decryption failed for user ${user_id}: ${err.message}`);
-      throw err;
+      throw new Error(`Credential decryption error: ${err.message}`);
     }
 
-    // Check token expiry; refresh if expired or near expiry
+    // Check token expiry; refresh if expired or near expiry (less than 5 minutes remaining)
+    let shouldRefresh = false;
     if (credentials.token_expiry) {
       const expiry = new Date(credentials.token_expiry).getTime();
-      const now = Date.now();
-      if (expiry - now < 5 * 60 * 1000) { // less than 5 minutes remaining
-        logger.info(`[QueueWorker] Access token nearing expiry. Refreshing for user ${user_id}...`);
-        try {
-          const newTokens = await refreshAccessToken(credentials.refresh_token_encrypted);
-          accessToken = newTokens.access_token;
-          const encNewAccess = encrypt(accessToken);
-          db.prepare(`
-            UPDATE youtube_credentials SET
-              access_token_encrypted = ?,
-              token_expiry = ?,
-              updated_at = datetime('now')
-            WHERE user_id = ?
-          `).run(
-            encNewAccess,
-            newTokens.expiry_date ? new Date(newTokens.expiry_date).toISOString() : null,
-            user_id
-          );
-        } catch (refreshErr) {
-          logger.error(`[QueueWorker] Failed to refresh token: ${refreshErr.message}`);
-        }
+      if (expiry - Date.now() < 5 * 60 * 1000) {
+        shouldRefresh = true;
+      }
+    } else {
+      shouldRefresh = true;
+    }
+
+    if (shouldRefresh) {
+      logger.info(`[QueueWorker] Access token nearing expiry or missing expiry. Refreshing for user ${user_id}...`);
+      try {
+        const newTokens = await refreshAccessToken(credentials.refresh_token_encrypted);
+        accessToken = newTokens.access_token;
+        const encNewAccess = encrypt(accessToken);
+        db.prepare(`
+          UPDATE youtube_credentials SET
+            access_token_encrypted = ?,
+            token_expiry = ?,
+            updated_at = datetime('now')
+          WHERE user_id = ?
+        `).run(
+          encNewAccess,
+          newTokens.expiry_date ? new Date(newTokens.expiry_date).toISOString() : null,
+          user_id
+        );
+        logger.info(`[QueueWorker] YouTube access token refreshed successfully for user ${user_id}`);
+      } catch (refreshErr) {
+        logger.error(`[QueueWorker] Failed to refresh YouTube access token: ${refreshErr.message}`);
+        throw new Error(`YouTube authentication expired: ${refreshErr.message}. Please reconnect in Settings.`);
       }
     }
 
@@ -122,6 +148,7 @@ async function processNextDueVideo() {
     }
 
     // Publish to YouTube
+    logger.info(`[QueueWorker] Uploading video ${video_id} ("${title}") to YouTube Shorts...`);
     const publishResult = await publishToYouTube({
       filePath: dueItem.file_path,
       title,
@@ -131,7 +158,11 @@ async function processNextDueVideo() {
       refreshTokenEncrypted: credentials.refresh_token_encrypted,
     });
 
-    // Mark as published
+    // Mark as published ONLY after YouTube returns a valid video ID
+    if (!publishResult || !publishResult.videoId) {
+      throw new Error('YouTube did not return a valid video ID upon publishing');
+    }
+
     db.prepare(`
       UPDATE videos SET
         status = 'published',
@@ -147,7 +178,7 @@ async function processNextDueVideo() {
     logger.info(`[QueueWorker] Successfully published video ${video_id} -> ${publishResult.url}`);
 
   } catch (err) {
-    logger.error(`[QueueWorker] Publishing error for video: ${err.message}`);
+    logger.error(`[QueueWorker] Publishing error: ${err.message}`);
 
     if (dueItem) {
       const currentRetries = (dueItem.retry_count || 0) + 1;
@@ -160,10 +191,10 @@ async function processNextDueVideo() {
             error_message = ?,
             updated_at = datetime('now')
           WHERE id = ?
-        `).run(currentRetries, `Max retries exceeded. Last error: ${err.message}`, dueItem.video_id);
+        `).run(currentRetries, `Publishing failed: ${err.message}`, dueItem.video_id);
         removeFromQueue(dueItem.video_id);
       } else {
-        logger.warn(`[QueueWorker] Retry ${currentRetries}/${MAX_RETRY_ATTEMPTS} for video ${dueItem.video_id}`);
+        logger.warn(`[QueueWorker] Retry ${currentRetries}/${MAX_RETRY_ATTEMPTS} for video ${dueItem.video_id}: ${err.message}`);
         db.prepare(`
           UPDATE videos SET
             status = 'queued',
@@ -185,14 +216,30 @@ async function processNextDueVideo() {
 export function startPublishingWorker() {
   if (workerInterval) return;
 
+  // On startup, recover any videos that were left stuck in 'publishing' state
+  const db = getDb();
+  try {
+    const stuck = db.prepare("UPDATE videos SET status = 'queued', updated_at = datetime('now') WHERE status = 'publishing'").run();
+    if (stuck.changes > 0) {
+      logger.info(`[QueueWorker] Recovered ${stuck.changes} stuck 'publishing' video(s) back to 'queued'.`);
+    }
+  } catch (recoveryErr) {
+    logger.warn(`[QueueWorker] Could not recover stuck videos on startup: ${recoveryErr.message}`);
+  }
+
   logger.info(`[QueueWorker] Starting publishing queue worker (polling interval: ${POLL_INTERVAL_MS / 1000}s)...`);
-  // Run first check immediately after 2 seconds
+
+  // Run first check after 2 seconds
   setTimeout(() => {
-    processNextDueVideo();
+    processNextDueVideo().catch(err => {
+      logger.error(`[QueueWorker] Initial check error: ${err.message}`);
+    });
   }, 2000);
 
   workerInterval = setInterval(() => {
-    processNextDueVideo();
+    processNextDueVideo().catch(err => {
+      logger.error(`[QueueWorker] Periodic check error: ${err.message}`);
+    });
   }, POLL_INTERVAL_MS);
 }
 
@@ -207,4 +254,4 @@ export function stopPublishingWorker() {
   }
 }
 
-export default { startPublishingWorker, stopPublishingWorker };
+export default { startPublishingWorker, stopPublishingWorker, processNextDueVideo };

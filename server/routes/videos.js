@@ -10,6 +10,7 @@ import { uploadSingle, uploadMultiple, handleUploadError, UPLOAD_DIR } from '../
 import { analyzeVideo } from '../services/ai-analyzer.js';
 import { screenVideo } from '../services/policy-screener.js';
 import { addToQueue, removeFromQueue } from '../services/queue-manager.js';
+import { processNextDueVideo } from '../workers/processor.js';
 import { importInstagramReels } from '../services/apify-importer.js';
 import logger from '../config/logger.js';
 
@@ -419,6 +420,14 @@ router.post('/:id/queue', authenticate, (req, res) => {
     }
 
     const entry = addToQueue(req.params.id, req.user.id);
+
+    // Trigger publishing worker immediately in background if video is due
+    setImmediate(() => {
+      processNextDueVideo().catch(err => {
+        logger.error(`Immediate publish worker error: ${err.message}`);
+      });
+    });
+
     res.json({ message: 'Added to publishing queue', entry });
   } catch (err) {
     logger.error(`Queue video error: ${err.message}`);
